@@ -1,11 +1,14 @@
 import asyncio
 import os
-from flask import Flask, request, jsonify
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
-from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEndpoint
+import re
+from collections import defaultdict
+from typing import Dict, List, Tuple
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from langchain_ollama import OllamaLLM
+
+from rag_engine import ConstitutionRAGEngine
 
 try:
     asyncio.get_running_loop()
@@ -13,61 +16,467 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 app = Flask(__name__)
+CORS(app)
 
-DB_FAISS_PATH = "vectorstore/db_faiss"
-HUGGINGFACE_REPO_ID = "mistralai/Mistral-7B-Instruct-v0.3"
-HF_TOKEN = os.getenv("HF_TOKEN")  # Use environment variable for token security
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:latest")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
-CUSTOM_PROMPT_TEMPLATE = """
-    Use the pieces of information provided in the context to answer the user's question.
-    If you don't know the answer, just say that you don't know. Don't try to make up an answer.
-    Don't provide anything out of the given context.
+SYSTEM_PROMPT = """You are Adhikar AI, functioning as both an expert Constitutional lawyer and judicial advisor for Indian law.
 
-    Context: {context}
-    Question: {question}
+You synthesize TWO knowledge domains:
+1. PRIMARY: Indian Constitution excerpts from the uploaded materials (cited with [Source N]).
+2. SECONDARY: General legal reasoning, precedent principles, and contextual legal knowledge.
 
-    Start the answer directly. No small talk, please.
+JURISDICTION:
+You handle TWO types of queries:
+A) CONSTITUTIONAL QUESTIONS: "What does Article 21 mean?" "Explain Fundamental Rights"
+   → Answer with straight Constitutional interpretation + legal reasoning.
+   
+B) PRACTICAL LEGAL ISSUES: "I'm facing a land dispute," "My employer wrongfully terminated me," "I've been wrongfully detained"
+   → Map the issue to relevant Constitutional rights/remedies [Source citations].
+   → Provide legal suggestions based on those Constitutional provisions.
+   → Guide user on what rights and processes apply to their situation.
+
+JUDICIAL METHODOLOGY:
+- Ground every answer in Constitutional text. Always cite relevant Articles/Parts from the provided context [Source N].
+- Apply legal reasoning: interpret Constitutional provisions logically, consider scope, limits, and intent.
+- For practical issues: (1) Identify the Constitutional right violated or applicable, (2) Explain user's Constitutional remedy, (3) Suggest actionable steps grounded in the Constitution.
+- Draw on general legal knowledge (case law principles, legal doctrines, statutory context) to enhance Constitutional interpretation.
+- Present reasoning transparently: state the Constitutional basis AND the legal logic/application.
+- Adopt judicial tone: authoritative, reasoned, balanced, and precise.
+
+CORE RULES:
+1. Constitution is foundational: Every answer MUST connect to Constitutional provisions in the provided context.
+2. Cite always: Include [Source N] for Constitutional excerpts. You may reference general legal principles without [Source] tags.
+3. For practical issues: Always specify the relevant Article/Right and the preferred remedy (e.g., "You can file a writ under Article 32," "This violates Article 14, which protects equality").
+4. Reason judicially: Explain the WHY—how the Constitution protects the user or applies to their situation.
+5. Scope boundaries: Stay within Indian constitutional jurisdiction and Indian law.
+6. No fabrication: Never invent Article numbers, Constitutional provisions, or specific case citations.
+
+RESPONSE STRUCTURE FOR PRACTICAL ISSUES:
+- ISSUE ANALYSIS: What happened? What Constitutional right is involved? [Source citations of relevant Articles]
+- LEGAL BASIS: Why the Constitution protects the user in this situation (reasoning + principle).
+- CONSTITUTIONAL REMEDY: What remedy is available? ("You can file a writ," "You have the right to petition," "Article [X] guarantees...")
+- SUGGESTED STEPS: 
+  1. Document evidence of the violation
+  2. Approach the relevant Constitutional remedy (e.g., file writ before High Court under Article 226, petition Supreme Court under Article 32)
+  3. Consult a practicing lawyer to file the appropriate case
+- DISCLAIMER: "This is Constitutional legal guidance, not professional legal advice. Consult a practicing lawyer with your case documents for specific guidance."
+
+TONE INSTRUCTION: {response_style_instruction}
+
+Conversation memory:
+{memory}
+
+Constitutional Context (Your authority):
+{context}
+
+Question from user:
+{question}
+
+Provide your judicial analysis or legal suggestion based on the Constitutional framework.
 """
 
-def get_vectorstore():
-    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    db = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
-    return db
+rag_engine = None
+session_memory: Dict[str, List[str]] = defaultdict(list)
+clarification_state: Dict[str, Dict[str, object]] = defaultdict(dict)
+session_style: Dict[str, str] = {}
+STYLE_OPTIONS = {"short_formal", "friendly_concise", "student_friendly"}
 
-def set_custom_prompt(custom_prompt_template):
-    return PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
+
+def get_rag_engine() -> ConstitutionRAGEngine:
+    global rag_engine
+    if rag_engine is None:
+        rag_engine = ConstitutionRAGEngine()
+        rag_engine.ensure_index()
+    return rag_engine
 
 def load_llm():
-    return HuggingFaceEndpoint(
-        repo_id=HUGGINGFACE_REPO_ID,
-        temperature=0.5,
-        model_kwargs={"token": HF_TOKEN, "max_length": "512"}
+    return OllamaLLM(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.0,
+        num_predict=512,
     )
 
-vectorstore = get_vectorstore()
-retriever = vectorstore.as_retriever(search_kwargs={'k': 3})
-qa_chain = RetrievalQA.from_chain_type(
-    llm=load_llm(),
-    chain_type="stuff",
-    retriever=retriever,
-    return_source_documents=True,
-    chain_type_kwargs={'prompt': set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)}
-)
+llm = None
+
+
+def get_llm():
+    global llm
+    if llm is None:
+        llm = load_llm()
+    return llm
+
+
+def trim_memory(lines: List[str], max_items: int = 8) -> List[str]:
+    if len(lines) <= max_items:
+        return lines
+    return lines[-max_items:]
+
+
+def _style_mode(session_id: str = "") -> str:
+    if session_id:
+        from_session = session_style.get(session_id, "").strip().lower()
+        if from_session in STYLE_OPTIONS:
+            return from_session
+
+    normalized = os.getenv("ADHIKAR_RESPONSE_STYLE", "friendly_concise").strip().lower()
+    return normalized if normalized in STYLE_OPTIONS else "friendly_concise"
+
+
+def _style_text(short_formal: str, friendly_concise: str, student_friendly: str, session_id: str = "") -> str:
+    mode = _style_mode(session_id)
+    if mode == "short_formal":
+        return short_formal
+    if mode == "student_friendly":
+        return student_friendly
+    return friendly_concise
+
+
+def _response_style_instruction(session_id: str = "") -> str:
+    return _style_text(
+        short_formal="Use formal legal prose in short paragraphs.",
+        friendly_concise="Use plain, polite language with concise wording.",
+        student_friendly="Use simple words, short sentences, and explain legal terms briefly.",
+        session_id=session_id,
+    )
+
+
+def build_prompt(question: str, context: str, memory_lines: List[str], session_id: str = "") -> str:
+    memory_blob = "\n".join(f"- {line}" for line in memory_lines) if memory_lines else "- No user facts recorded yet."
+    return SYSTEM_PROMPT.format(
+        memory=memory_blob,
+        context=context,
+        question=question,
+        response_style_instruction=_response_style_instruction(session_id),
+    )
+
+
+def _is_greeting_or_smalltalk(query: str) -> bool:
+    cleaned = re.sub(r"[^a-zA-Z\s]", "", query).strip().lower()
+    if not cleaned:
+        return True
+
+    smalltalk = {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "hmm",
+    }
+    return cleaned in smalltalk
+
+
+def _smalltalk_reply(query: str, session_id: str = "") -> str:
+    cleaned = re.sub(r"[^a-zA-Z\s]", "", query).strip().lower()
+    if cleaned in {"thanks", "thank you"}:
+        return _style_text(
+            short_formal="You are welcome. I am prepared to address your Constitutional questions or legal issues with reasoned legal analysis.",
+            friendly_concise="You are welcome. I can help with Constitutional questions OR practical legal issues you face (land disputes, employment problems, wrongful detention, etc.). Ask away.",
+            student_friendly="You are welcome. Ask me about the Constitution OR tell me about a legal problem you face, and I'll help with legal suggestions.",
+            session_id=session_id,
+        )
+
+    return _style_text(
+        short_formal="Good day. I am ready to provide Constitutional legal analysis and advice on practical legal matters. Please state your query or describe your legal issue.",
+        friendly_concise="Hello. I am your Constitutional lawyer and legal advisor. Ask me about a Constitutional topic (Article, Right, Power) OR describe a legal issue you face (land dispute, job problem, wrongful detention, discrimination, etc.). I'll provide legal guidance based on the Constitution.",
+        student_friendly="Hi. I'm your Constitutional lawyer. You can ask about the Constitution OR tell me about a legal problem (land, job, detention, discrimination), and I'll explain your rights and how to protect them.",
+        session_id=session_id,
+    )
+
+
+def _looks_like_unclear_query(query: str) -> bool:
+    tokens = re.findall(r"[a-zA-Z0-9]+", query.lower())
+    if len(tokens) >= 3:
+        return False
+
+    constitutional_cues = {
+        "article",
+        "part",
+        "constitution",
+        "amendment",
+        "fundamental",
+        "rights",
+        "duty",
+        "directive",
+        "india",
+        "law",
+    }
+    
+    legal_issue_cues = {
+        "land",
+        "property",
+        "dispute",
+        "wrongful",
+        "terminated",
+        "detained",
+        "arrested",
+        "harassed",
+        "violated",
+        "discrimination",
+        "employment",
+        "issue",
+    }
+    
+    return not any(token in constitutional_cues or token in legal_issue_cues for token in tokens)
+
+
+def _evaluate_specificity(query: str) -> Tuple[bool, List[str]]:
+    normalized = query.strip().lower()
+    tokens = re.findall(r"[a-zA-Z0-9]+", normalized)
+
+    # Check for Constitutional topics
+    has_constitutional_anchor = bool(
+        re.search(r"\barticle\s+\d+[a-z]?\b", normalized)
+        or re.search(r"\bpart\s+[ivxlc]+\b", normalized)
+        or re.search(
+            r"\b(constitution|constitutional|fundamental rights|directive principles|amendment|schedule|parliament|president|governor)\b",
+            normalized,
+        )
+    )
+    
+    # Check for practical legal issues (land, employment, wrongful detention, dispute, violation, etc.)
+    has_practical_issue = bool(
+        re.search(
+            r"\b(land|property|dispute|wrongful|terminated|detained|arrested|harassed|violated|discrimination|denied|refused|violence|assault|theft|fraud|eviction|lease|contract|employment|payment|wage|harassment|threat|illegal|unfair|unjust|forced|coerced)\b",
+            normalized,
+        )
+    )
+    
+    # Accept either Constitutional topic OR practical legal issue
+    has_anchor = has_constitutional_anchor or has_practical_issue
+    
+    has_intent = bool(
+        re.search(
+            r"\b(what|how|why|explain|meaning|scope|difference|whether|does|can|valid|protection|powers|limits|facing|help|suggest|remedy|solution|advice)\b",
+            normalized,
+        )
+    )
+
+    missing: List[str] = []
+    if len(tokens) < 4:
+        missing.append("more detail")
+    if not has_anchor:
+        missing.append("constitutional topic or legal issue")
+    if not has_intent:
+        missing.append("what you want to know")
+
+    return len(missing) == 0, missing
+
+
+def _clarification_prompt(missing: List[str], turn: int, session_id: str = "") -> str:
+    if turn >= 2:
+        return _style_text(
+            short_formal="Clarification required: State your query as: [Constitutional concept/Article/Part] OR [Legal issue you face] + [Specific question: meaning/remedy/suggestion].",
+            friendly_concise="I need one more detail. Either ask about a Constitutional topic (Article, Part, Right) OR describe your legal issue (land dispute, employment problem, wrongful detention, etc.) + what help you need.",
+            student_friendly="One more thing: Tell me either a Constitution topic (Article, Right, Part) OR your legal problem (like land dispute, job issue) + what you want to know or need help with.",
+            session_id=session_id,
+        )
+
+    if "constitutional topic or legal issue" in missing and "what you want to know" in missing:
+        return _style_text(
+            short_formal="Specify: (1) A Constitutional topic (Article/Part/Right) OR a practical legal issue (e.g., land dispute, wrongful termination, wrongful detention); and (2) What you want to know or what remedy/suggestion you need.",
+            friendly_concise="Tell me: (1) Are you asking about a Constitution topic (like Article 19, Fundamental Rights) OR do you have a real legal problem (land issue, employment dispute, detention, etc.)? and (2) What help do you need—explanation, legal suggestion, or remedy?",
+            student_friendly="Tell me two things: (1) Is it a Constitution question (Article, Right, Power) OR a legal problem you're facing (land, job, wrongful detention)? and (2) What do you want—explanation or legal help?",
+            session_id=session_id,
+        )
+
+    if "constitutional topic or legal issue" in missing:
+        return _style_text(
+            short_formal="Please identify: (1) A Constitutional provision (Article/Part), or (2) A legal issue you face (land dispute, employment, wrongful detention, discrimination, etc.).",
+            friendly_concise="Please share: Either a Constitutional topic (Article, Part, Right) OR a real legal issue (land problem, job issue, wrongful arrest, etc.).",
+            student_friendly="Tell me: A Constitution topic (Article, Part, Right) OR a legal problem you're facing (land, job, detention, etc.)?",
+            session_id=session_id,
+        )
+
+    if "what you want to know" in missing:
+        return _style_text(
+            short_formal="State your specific question or what legal suggestion/remedy you seek: meaning, scope, application, comparison, or how to address your issue.",
+            friendly_concise="What do you want to know? For Constitutional topics: meaning, scope, limits, comparison. For legal issues: what remedy you can use or what rights protect you.",
+            student_friendly="What do you want to know? For Constitution: what it means or how it works. For your legal problem: what can you do about it or what rights you have.",
+            session_id=session_id,
+        )
+
+    return _style_text(
+        short_formal="Please provide one further detail for an accurate Constitutional answer or legal suggestion.",
+        friendly_concise="Please add one more detail so I can answer accurately from the Constitutional framework.",
+        student_friendly="Please add one more detail so I can help you with Constitution or your legal issue.",
+        session_id=session_id,
+    )
+
+
+def _merge_for_clarification(existing: str, incoming: str) -> str:
+    existing = existing.strip()
+    incoming = incoming.strip()
+    if not existing:
+        return incoming
+    if not incoming:
+        return existing
+    return f"{existing}. {incoming}"
+
+
+def _is_grounded_response(text: str, source_count: int) -> bool:
+    if not text.strip():
+        return False
+
+    tags = re.findall(r"\[Source\s+(\d+)\]", text)
+    if not tags:
+        return False
+
+    valid_ids = {str(i) for i in range(1, source_count + 1)}
+    return all(tag in valid_ids for tag in tags)
+
+
+def _is_relevant_response(query: str, response: str) -> bool:
+    q_tokens = set(re.findall(r"[a-zA-Z0-9]+", query.lower()))
+    r_tokens = set(re.findall(r"[a-zA-Z0-9]+", response.lower()))
+
+    stopwords = {
+        "the", "a", "an", "is", "are", "was", "were", "to", "of", "for", "and",
+        "in", "on", "it", "that", "this", "with", "as", "by", "or", "be", "from",
+        "what", "how", "does", "can", "please", "about",
+    }
+
+    q_meaningful = {t for t in q_tokens if t not in stopwords and len(t) > 2}
+    if not q_meaningful:
+        return True
+
+    overlap = q_meaningful.intersection(r_tokens)
+    if overlap:
+        return True
+
+    query_article = re.search(r"\barticle\s+(\d+[a-z]?)\b", query.lower())
+    if query_article and query_article.group(1) in r_tokens:
+        return True
+
+    return False
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
-    user_query = data.get("query")
+    data = request.json or {}
+    user_query = (data.get("query") or "").strip()
+    session_id = (data.get("session_id") or "default").strip()
+    requested_style = (data.get("response_style") or "").strip().lower()
+
+    if requested_style in STYLE_OPTIONS:
+        session_style[session_id] = requested_style
+
     if not user_query:
         return jsonify({"error": "Query parameter is missing"}), 400
-    
+
+    state = clarification_state.get(session_id, {})
+    in_clarification = bool(state.get("active", False))
+
+    if in_clarification:
+        merged_query = _merge_for_clarification(str(state.get("candidate_query", "")), user_query)
+        turn = int(state.get("turn", 0)) + 1
+    else:
+        merged_query = user_query
+        turn = 0
+
+    if _is_greeting_or_smalltalk(merged_query):
+        clarification_state[session_id] = {
+            "active": True,
+            "turn": turn,
+            "candidate_query": merged_query,
+        }
+        return jsonify(
+            {
+                "response": _smalltalk_reply(merged_query, session_id),
+                "needs_clarification": True,
+                "response_style": _style_mode(session_id),
+                "sources": [],
+                "session_id": session_id,
+            }
+        )
+
+    is_specific, missing = _evaluate_specificity(merged_query)
+    if (not is_specific) or _looks_like_unclear_query(merged_query):
+        clarification_state[session_id] = {
+            "active": True,
+            "turn": turn,
+            "candidate_query": merged_query,
+        }
+        return jsonify(
+            {
+                "response": _clarification_prompt(missing, turn, session_id),
+                "needs_clarification": True,
+                "response_style": _style_mode(session_id),
+                "sources": [],
+                "session_id": session_id,
+            }
+        )
+
+    clarification_state.pop(session_id, None)
+
     try:
-        response = qa_chain.invoke({'query': user_query})
-        result = response["result"]
-        source_documents = response["source_documents"]
-        return jsonify({"response": result, "sources": [doc.metadata for doc in source_documents]})
+        engine = get_rag_engine()
+        search_results = engine.search(merged_query)
+        context, sources = engine.build_context(search_results)
+
+        history = session_memory[session_id]
+        history.append(f"User said: {merged_query}")
+        history = trim_memory(history)
+        session_memory[session_id] = history
+
+        full_prompt = build_prompt(merged_query, context, history, session_id)
+        llm_response = get_llm().invoke(full_prompt)
+        if not isinstance(llm_response, str):
+            llm_response = str(llm_response)
+
+        if not _is_relevant_response(merged_query, llm_response):
+            clarification_state[session_id] = {
+                "active": True,
+                "turn": turn + 1,
+                "candidate_query": merged_query,
+            }
+            return jsonify(
+                {
+                    "response": (
+                        _style_text(
+                            short_formal="One additional detail is required. Please restate your question with the exact constitutional issue and precise point to address.",
+                            friendly_concise="I need one more detail to answer this properly. Please restate your question with the exact constitutional issue and the specific point you want me to address.",
+                            student_friendly="I need one more detail. Please restate your question with the exact Constitution topic and what exactly you want me to explain.",
+                            session_id=session_id,
+                        )
+                    ),
+                    "needs_clarification": True,
+                    "response_style": _style_mode(session_id),
+                    "sources": [],
+                    "session_id": session_id,
+                }
+            )
+
+        session_memory[session_id] = trim_memory(session_memory[session_id] + [f"Assistant said: {llm_response}"])
+
+        return jsonify(
+            {
+                "response": llm_response,
+                "needs_clarification": False,
+                "response_style": _style_mode(session_id),
+                "sources": sources,
+                "session_id": session_id,
+            }
+        )
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        err = str(e)
+        if "ollama" in err.lower() or "connection refused" in err.lower() or "model" in err.lower():
+            err = (
+                f"{err}. Ensure Ollama is running and model '{OLLAMA_MODEL}' is available. "
+                f"Try: ollama serve ; ollama pull {OLLAMA_MODEL}"
+            )
+        return jsonify({"error": err}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
