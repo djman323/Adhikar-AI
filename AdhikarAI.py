@@ -18,7 +18,7 @@ except RuntimeError:
 app = Flask(__name__)
 CORS(app)
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:latest")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 SYSTEM_PROMPT = """You are Adhikar AI, functioning as both an expert Constitutional lawyer and judicial advisor for Indian law.
@@ -52,6 +52,7 @@ CORE RULES:
 4. Reason judicially: Explain the WHY—how the Constitution protects the user or applies to their situation.
 5. Scope boundaries: Stay within Indian constitutional jurisdiction and Indian law.
 6. No fabrication: Never invent Article numbers, Constitutional provisions, or specific case citations.
+7. Be brief and precise: Keep each answer concise (normally 90-140 words), focused, and free of repetition unless the user explicitly asks for detail.
 
 RESPONSE STRUCTURE FOR PRACTICAL ISSUES:
 - ISSUE ANALYSIS: What happened? What Constitutional right is involved? [Source citations of relevant Articles]
@@ -136,9 +137,9 @@ def _style_text(short_formal: str, friendly_concise: str, student_friendly: str,
 
 def _response_style_instruction(session_id: str = "") -> str:
     return _style_text(
-        short_formal="Use formal legal prose in short paragraphs.",
-        friendly_concise="Use plain, polite language with concise wording.",
-        student_friendly="Use simple words, short sentences, and explain legal terms briefly.",
+        short_formal="Use formal legal prose with very concise wording. Keep the answer short, precise, and non-repetitive.",
+        friendly_concise="Use plain, polite language. Keep the answer short, precise, and non-repetitive.",
+        student_friendly="Use simple words and short sentences. Keep the answer short, precise, and non-repetitive.",
         session_id=session_id,
     )
 

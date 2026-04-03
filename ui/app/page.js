@@ -9,6 +9,25 @@ const QUICK_PROMPTS = [
   "Difference between Article 19 and Article 21.",
 ];
 
+const HIGHLIGHTS = [
+  { value: "Constitution-first", label: "Grounded in Indian constitutional context" },
+  { value: "Source-linked", label: "Every answer can cite retrieved excerpts" },
+  { value: "Fast clarity", label: "Designed for direct, practical legal guidance" },
+];
+
+const LAW_PILLARS = [
+  "Fundamental Rights",
+  "Writ Remedies",
+  "Judicial Review",
+  "Directive Principles",
+];
+
+const TRUST_POINTS = [
+  "Responsive legal tone presets",
+  "Retrieval-aware source citations",
+  "Built for constitutional reasoning",
+];
+
 export default function Page() {
   const [sessionId, setSessionId] = useState("");
   const [query, setQuery] = useState("");
@@ -101,118 +120,228 @@ export default function Page() {
     status === "Working..." ? "status-badge--working" : isClarifying ? "status-badge--clarify" : "status-badge--ready";
 
   return (
-    <div className="app-container">
-      {/* Header */}
-      <header className="app-header">
-        <div className="header-content">
-          <h1 className="header-title">Adhikar AI - Constitution Chat</h1>
-          <p className="header-subtitle">Expert Constitutional lawyer and legal advisor for Indian law</p>
-        </div>
-      </header>
-
-      {/* Chat Messages */}
-      <div className="chat-container" ref={chatRef}>
-        <div className="messages-wrapper">
-          {messages.length === 0 ? (
-            <div style={{ textAlign: "center", color: "var(--text-secondary)", padding: "40px 20px" }}>
-              <p style={{ fontSize: "14px", marginBottom: "16px" }}>Welcome to Adhikar AI</p>
-              <p style={{ fontSize: "12px" }}>Ask about Constitutional topics or describe a legal issue you face</p>
-            </div>
-          ) : (
-            messages.map((m, idx) => (
-              <div key={`${m.role}-${idx}`} className={`message message--${m.variant}`}>
-                <div className="message-bubble">
-                  <div className="message-label">{m.role}</div>
-                  <p className="message-content">{m.text}</p>
-
-                  {m.sources?.length > 0 && (
-                    <details className="sources-wrap">
-                      <summary>📎 Sources ({m.sources.length})</summary>
-                      <ul className="sources-list">
-                        {m.sources.map((src) => (
-                          <li key={`${idx}-${src.source_id}`}>
-                            [Source {src.source_id}] {src.section_hint} (page {src.page})
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-
-          {isSending && (
-            <div className="message message--assistant">
-              <div className="message-bubble">
-                <div className="message-label">Adhikar AI</div>
-                <div className="typing-indicator">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+    <main className="app-shell">
+      <div className="scene-bg" aria-hidden="true">
+        <span className="scene-orb scene-orb--left" />
+        <span className="scene-orb scene-orb--right" />
+        <span className="scene-grid" />
       </div>
 
-      {/* Composer */}
-      <div className="composer-section">
-        <div className="composer-inner">
-          {/* Controls */}
-          <div className="controls-row">
-            <div className="status-info">
-              <div className={`status-badge ${statusClass}`}>{status}</div>
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Constitutional intelligence for India</p>
+          <h1 className="hero-title">
+            A legal interface that feels like a modern court chamber.
+          </h1>
+          <p className="hero-lead">
+            Adhikar AI blends source-aware constitutional retrieval with a cinematic, high-trust workspace for legal
+            questions, remedies, and practical guidance.
+          </p>
+
+          <div className="hero-actions">
+            <button type="button" className="hero-button hero-button--primary" onClick={() => setQuery(QUICK_PROMPTS[0])}>
+              Start with a constitutional question
+            </button>
+            <button type="button" className="hero-button hero-button--secondary" onClick={() => setQuery(QUICK_PROMPTS[2])}>
+              Explore writ remedies
+            </button>
+          </div>
+
+          <div className="hero-highlights">
+            {HIGHLIGHTS.map((item) => (
+              <article key={item.value} className="highlight-card">
+                <strong>{item.value}</strong>
+                <span>{item.label}</span>
+              </article>
+            ))}
+          </div>
+
+          <div className="trust-row">
+            {TRUST_POINTS.map((point) => (
+              <span key={point} className="trust-pill">
+                {point}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="hero-art" aria-hidden="true">
+          <div className="law-orb law-orb--outer" />
+          <div className="law-orb law-orb--inner" />
+          <div className="law-structure">
+            <div className="law-roof" />
+            <div className="law-columns">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="law-base" />
+          </div>
+          <div className="law-scales">
+            <span className="scale-rod" />
+            <span className="scale-arm scale-arm--left" />
+            <span className="scale-arm scale-arm--right" />
+            <span className="scale-chain scale-chain--left" />
+            <span className="scale-chain scale-chain--right" />
+            <span className="scale-pan scale-pan--left" />
+            <span className="scale-pan scale-pan--right" />
+            <span className="scale-stand" />
+          </div>
+          <div className="law-ribbon">3D legal reasoning</div>
+        </div>
+      </section>
+
+      <section className="workspace-grid">
+        <aside className="info-panel">
+          <div className="panel-card panel-card--glass panel-card--intro">
+            <p className="panel-kicker">Home</p>
+            <h2>Ask, compare, and reason through constitutional problems.</h2>
+            <p>
+              The interface is tuned for long-form legal inquiry, source citations, and quick follow-up prompts. It
+              stays focused while still feeling premium.
+            </p>
+          </div>
+
+          <div className="panel-card">
+            <div className="panel-header">
+              <h3>Legal pillars</h3>
+              <span className={`status-badge ${statusClass}`}>{status}</span>
+            </div>
+            <div className="pillar-list">
+              {LAW_PILLARS.map((pillar) => (
+                <span key={pillar} className="pillar-chip">
+                  {pillar}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel-card">
+            <div className="panel-header">
+              <h3>Session</h3>
               <span className="session-id">ID: {sessionId}</span>
             </div>
-            <select className="tone-selector" value={responseStyle} onChange={(e) => setResponseStyle(e.target.value)}>
+            <p className="panel-note">Tone preset: {responseStyle.replace("_", " ")}</p>
+            <select className="tone-selector tone-selector--wide" value={responseStyle} onChange={(e) => setResponseStyle(e.target.value)}>
               <option value="friendly_concise">Friendly & Concise</option>
               <option value="student_friendly">Student Friendly</option>
               <option value="short_formal">Formal & Brief</option>
             </select>
           </div>
 
-          {/* Quick Prompts */}
-          <div className="quick-prompts">
-            {QUICK_PROMPTS.map((prompt) => (
-              <button
-                key={prompt}
-                type="button"
-                className="quick-prompt-btn"
-                onClick={() => setQuery(prompt)}
-                disabled={isSending}
-              >
-                {prompt}
-              </button>
-            ))}
+          <div className="panel-card panel-card--glow">
+            <h3>Quick entry</h3>
+            <div className="quick-prompts quick-prompts--stacked">
+              {QUICK_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="quick-prompt-btn quick-prompt-btn--wide"
+                  onClick={() => setQuery(prompt)}
+                  disabled={isSending}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        <section className="chat-panel">
+          <header className="chat-header">
+            <div>
+              <p className="chat-kicker">Constitution Chat</p>
+              <h2>Compose a question and let the system reason in context.</h2>
+            </div>
+            <p className="chat-subtitle">Source-linked answers, follow-up support, and a calm dark courtroom aesthetic.</p>
+          </header>
+
+          <div className="chat-container" ref={chatRef}>
+            <div className="messages-wrapper">
+              {messages.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-state__badge">Welcome to Adhikar AI</div>
+                  <h3>Start with an article, a right, or a real-world legal problem.</h3>
+                  <p>
+                    Ask about constitutional provisions, compare rights, or describe a dispute. The interface will keep
+                    the conversation structured and easy to follow.
+                  </p>
+                </div>
+              ) : (
+                messages.map((m, idx) => (
+                  <article key={`${m.role}-${idx}`} className={`message message--${m.variant}`}>
+                    <div className="message-bubble">
+                      <div className="message-label">{m.role}</div>
+                      <p className="message-content">{m.text}</p>
+
+                      {m.sources?.length > 0 && (
+                        <details className="sources-wrap">
+                          <summary>Sources ({m.sources.length})</summary>
+                          <ul className="sources-list">
+                            {m.sources.map((src) => (
+                              <li key={`${idx}-${src.source_id}`}>
+                                [Source {src.source_id}] {src.section_hint} (page {src.page})
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  </article>
+                ))
+              )}
+
+              {isSending && (
+                <article className="message message--assistant">
+                  <div className="message-bubble">
+                    <div className="message-label">Adhikar AI</div>
+                    <div className="typing-indicator">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </div>
+                </article>
+              )}
+            </div>
           </div>
 
-          {/* Input Form */}
-          <form className="composer-form" onSubmit={submit}>
-            <div className="input-wrapper">
-              <textarea
-                ref={textareaRef}
-                className="composer-textarea"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    submit(e);
-                  }
-                }}
-                placeholder="Ask about the Constitution or describe a legal issue..."
-                rows={1}
-                disabled={isSending}
-              />
+          <div className="composer-section composer-section--floating">
+            <div className="composer-inner">
+              <div className="controls-row">
+                <div className="status-info">
+                  <div className={`status-badge ${statusClass}`}>{status}</div>
+                  <span className="session-id">ID: {sessionId}</span>
+                </div>
+                <div className="composer-meta">Enter to send, Shift+Enter for a new line</div>
+              </div>
+
+              <form className="composer-form" onSubmit={submit}>
+                <div className="input-wrapper">
+                  <textarea
+                    ref={textareaRef}
+                    className="composer-textarea"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        submit(e);
+                      }
+                    }}
+                    placeholder="Ask about the Constitution or describe a legal issue..."
+                    rows={1}
+                    disabled={isSending}
+                  />
+                </div>
+                <button type="submit" className="send-button" disabled={!query.trim() || isSending}>
+                  {isSending ? "Sending..." : "Send"}
+                </button>
+              </form>
             </div>
-            <button type="submit" className="send-button" disabled={!query.trim() || isSending}>
-              {isSending ? "Sending..." : "Send"}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
+          </div>
+        </section>
+      </section>
+    </main>
   );
 }

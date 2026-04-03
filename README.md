@@ -15,7 +15,7 @@ Adhikar AI is a Constitution-focused legal assistant. It answers using only the 
 - Python 3.10+
 - Node.js 18+
 - Ollama installed and running
-- A local Ollama model (example: `mistral:latest`)
+- A local Ollama model (example: `qwen2.5:7b`)
 
 Start Ollama and pull a model (one-time):
 
@@ -26,13 +26,13 @@ ollama serve
 In a new PowerShell terminal:
 
 ```powershell
-ollama pull mistral:latest
+ollama pull qwen2.5:7b
 ```
 
 Optional model selection for this app (current PowerShell session):
 
 ```powershell
-$env:OLLAMA_MODEL="mistral:latest"
+$env:OLLAMA_MODEL="qwen2.5:7b"
 ```
 
 Optional response style (current PowerShell session):

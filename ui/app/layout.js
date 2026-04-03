@@ -13,8 +13,8 @@ const ibmPlexSerif = IBM_Plex_Serif({
 });
 
 export const metadata = {
-  title: "Adhikar AI",
-  description: "Constitution-first legal assistant",
+  title: "Adhikar AI | Constitutional Legal Intelligence",
+  description: "A cinematic constitutional law interface with source-aware legal chat and a premium home page.",
 };
 
 export default function RootLayout({ children }) {
