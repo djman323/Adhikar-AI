@@ -5,8 +5,12 @@ services:
       dockerfile: Dockerfile.backend
     environment:
       PORT: 5000
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      ADHIKAR_RESPONSE_STYLE: ${ADHIKAR_RESPONSE_STYLE:-friendly_concise}
       ADHIKAR_DATA_DIR: /app/data
       ADHIKAR_DB_PATH: /app/data/adhikar.sqlite3
     volumes:
@@ -21,10 +25,8 @@ services:
     build:
       context: ./ui
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:5000
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:5000
+      BACKEND_API_URL: ${BACKEND_API_URL:-http://backend:5000}
     depends_on:
       - backend
     ports:

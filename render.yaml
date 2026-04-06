@@ -36,5 +36,5 @@ services:
     plan: starter
     autoDeploy: true
     envVars:
-      - key: NEXT_PUBLIC_API_BASE_URL
+      - key: BACKEND_API_URL
         sync: false

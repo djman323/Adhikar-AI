@@ -71,6 +71,10 @@ Then edit `.env` for your provider choice:
 
 Backend automatically loads `.env`, and Next.js automatically loads `ui/.env.local`.
 
+For the UI proxy, you can set `BACKEND_API_URL=http://127.0.0.1:5000` in `ui/.env.local` for local dev, but it is optional because the UI defaults to localhost in development.
+
+For Docker Compose, the root `.env` is used automatically if present, but it is optional because the compose file has safe defaults. The UI defaults to the `backend` service name inside the container network unless you override `BACKEND_API_URL`.
+
 ```powershell
 .\dev.ps1
 ```
@@ -108,6 +112,51 @@ LLM selection behavior:
 - If `LLM_PROVIDER=ollama`, backend uses Ollama.
 - If `LLM_PROVIDER` is not set, backend auto-selects Gemini when `GEMINI_API_KEY` is present; otherwise it uses Ollama.
 
+## Deploy To Railway (Recommended)
+
+This repository now uses a same-origin UI proxy, so Railway only needs the backend URL inside the UI service.
+
+### 1) Create a Railway project
+
+- Sign in to Railway and connect GitHub
+- Create a new project from this repository
+
+### 2) Deploy two services
+
+- Service 1: backend from repo root using [Dockerfile.backend](Dockerfile.backend)
+- Service 2: UI from [ui/Dockerfile](ui/Dockerfile) with `rootDir` set to `ui`
+
+### 3) Set Railway environment variables
+
+Backend service:
+
+- `LLM_PROVIDER=gemini`
+- `GEMINI_API_KEY=your_api_key`
+- `GEMINI_MODEL=gemini-1.5-flash`
+- `ADHIKAR_CORS_ORIGINS=<your-ui-url>`
+- `ADHIKAR_DATA_DIR=/app/data`
+- `ADHIKAR_DB_PATH=/app/data/adhikar.sqlite3`
+
+UI service:
+
+- `BACKEND_API_URL=<your-backend-url>`
+
+### 4) Add persistence if available
+
+- If your Railway plan supports volumes, mount persistent storage for `/app/data`
+- If not, the app still runs, but chats reset when the backend container restarts
+
+### 5) Validate
+
+- Backend health: `https://<backend-url>/health`
+- UI: `https://<ui-url>`
+
+### Local vs Railway behavior
+
+- The browser talks only to the UI service
+- The UI proxies `/api/chat` and `/api/sessions/...` to the backend
+- That means you do not need a public `NEXT_PUBLIC_API_BASE_URL` anymore
+
 ## Deploy To Render (Docker, Production)
 
 This repository includes a Render Blueprint at `render.yaml` for two Docker web services:
@@ -137,7 +186,7 @@ For `adhikar-backend`:
 
 For `adhikar-ui`:
 
-- `NEXT_PUBLIC_API_BASE_URL` = backend public URL
+- `BACKEND_API_URL` = backend public URL
   - Example: `https://adhikar-backend.onrender.com`
 
 ### 4) Persistent data on Render

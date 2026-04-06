@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:5000";
 const STORAGE_KEYS = {
   sessionId: "adhikar.sessionId",
   responseStyle: "adhikar.responseStyle",
@@ -86,7 +85,7 @@ export default function Page() {
 
     const loadSessionHistory = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`);
+        const response = await fetch(`/api/sessions/${sessionId}`);
         if (!response.ok) {
           return;
         }
@@ -146,7 +145,7 @@ export default function Page() {
     setStatus("Working...");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/chat`, {
+      const response = await fetch(`/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
