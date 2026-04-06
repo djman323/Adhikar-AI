@@ -621,7 +621,8 @@ textarea:focus-visible {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  min-height: 820px;
+  min-height: 0;
+  height: clamp(620px, 80vh, 920px);
   overflow: hidden;
 }
 
@@ -1012,7 +1013,13 @@ textarea:focus-visible {
   }
 
   .chat-panel {
-    min-height: 760px;
+    height: clamp(560px, 76vh, 820px);
+  }
+}
+
+@media (max-width: 1024px) {
+  .chat-panel {
+    height: 74vh;
   }
 }
 
@@ -1076,6 +1083,10 @@ textarea:focus-visible {
 
   .message-bubble {
     max-width: 100%;
+  }
+
+  .chat-panel {
+    height: 72vh;
   }
 
   .composer-form {

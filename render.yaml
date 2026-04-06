@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: adhikar-backend
+    env: docker
+    dockerfilePath: ./Dockerfile.backend
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:
+      name: adhikar-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADHIKAR_DATA_DIR
+        value: /app/data
+      - key: ADHIKAR_DB_PATH
+        value: /app/data/adhikar.sqlite3
+      - key: ADHIKAR_CORS_ORIGINS
+        sync: false
+      - key: GUNICORN_WORKERS
+        value: "2"
+      - key: GUNICORN_TIMEOUT
+        value: "240"
+
+  - type: web
+    name: adhikar-ui
+    env: docker
+    rootDir: ui
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false

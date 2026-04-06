@@ -1,14 +1,18 @@
 import asyncio
 import os
 import re
-from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import OllamaLLM
 
 from rag_engine import ConstitutionRAGEngine
+from storage import ChatStore
+
+load_dotenv()
 
 try:
     asyncio.get_running_loop()
@@ -16,10 +20,22 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 app = Flask(__name__)
-CORS(app)
+
+
+def _cors_origins_from_env() -> str | List[str]:
+    configured = os.getenv("ADHIKAR_CORS_ORIGINS", "*").strip()
+    if not configured or configured == "*":
+        return "*"
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+CORS(app, resources={r"/*": {"origins": _cors_origins_from_env()}})
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
 
 SYSTEM_PROMPT = """You are Adhikar AI, functioning as both an expert Constitutional lawyer and judicial advisor for Indian law.
 
@@ -79,10 +95,8 @@ Provide your judicial analysis or legal suggestion based on the Constitutional f
 """
 
 rag_engine = None
-session_memory: Dict[str, List[str]] = defaultdict(list)
-clarification_state: Dict[str, Dict[str, object]] = defaultdict(dict)
-session_style: Dict[str, str] = {}
 STYLE_OPTIONS = {"short_formal", "friendly_concise", "student_friendly"}
+chat_store = ChatStore()
 
 
 def get_rag_engine() -> ConstitutionRAGEngine:
@@ -92,7 +106,26 @@ def get_rag_engine() -> ConstitutionRAGEngine:
         rag_engine.ensure_index()
     return rag_engine
 
+
+def _resolved_provider() -> str:
+    if LLM_PROVIDER in {"gemini", "ollama"}:
+        return LLM_PROVIDER
+    return "gemini" if GEMINI_API_KEY else "ollama"
+
+
 def load_llm():
+    provider = _resolved_provider()
+
+    if provider == "gemini":
+        if not GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            google_api_key=GEMINI_API_KEY,
+            temperature=0.0,
+            max_output_tokens=512,
+        )
+
     return OllamaLLM(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
@@ -110,6 +143,30 @@ def get_llm():
     return llm
 
 
+def invoke_llm(prompt: str) -> str:
+    output = get_llm().invoke(prompt)
+    if isinstance(output, str):
+        return output
+
+    content = getattr(output, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        flattened: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                flattened.append(item)
+            elif isinstance(item, dict):
+                text = str(item.get("text", "")).strip()
+                if text:
+                    flattened.append(text)
+        if flattened:
+            return "\n".join(flattened)
+
+    return str(output)
+
+
 def trim_memory(lines: List[str], max_items: int = 8) -> List[str]:
     if len(lines) <= max_items:
         return lines
@@ -118,7 +175,8 @@ def trim_memory(lines: List[str], max_items: int = 8) -> List[str]:
 
 def _style_mode(session_id: str = "") -> str:
     if session_id:
-        from_session = session_style.get(session_id, "").strip().lower()
+        session = chat_store.get_session(session_id)
+        from_session = (session or {}).get("response_style", "").strip().lower()
         if from_session in STYLE_OPTIONS:
             return from_session
 
@@ -362,6 +420,26 @@ def _is_relevant_response(query: str, response: str) -> bool:
 def health():
     return jsonify({"status": "ok"})
 
+
+@app.route("/sessions/<session_id>", methods=["GET"])
+def get_session(session_id: str):
+    session = chat_store.get_session(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+
+    return jsonify(
+        {
+            "session_id": session_id,
+            "response_style": session.get("response_style", _style_mode(session_id)),
+            "clarification_state": {
+                "active": bool(session.get("clarification_active", 0)),
+                "turn": int(session.get("clarification_turn", 0)),
+                "candidate_query": session.get("clarification_candidate_query", ""),
+            },
+            "turns": chat_store.list_turns(session_id),
+        }
+    )
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json or {}
@@ -369,31 +447,30 @@ def chat():
     session_id = (data.get("session_id") or "default").strip()
     requested_style = (data.get("response_style") or "").strip().lower()
 
+    chat_store.upsert_session(session_id)
     if requested_style in STYLE_OPTIONS:
-        session_style[session_id] = requested_style
+        chat_store.set_response_style(session_id, requested_style)
 
     if not user_query:
         return jsonify({"error": "Query parameter is missing"}), 400
 
-    state = clarification_state.get(session_id, {})
-    in_clarification = bool(state.get("active", False))
+    session = chat_store.get_session(session_id) or {}
+    in_clarification = bool(session.get("clarification_active", 0))
 
     if in_clarification:
-        merged_query = _merge_for_clarification(str(state.get("candidate_query", "")), user_query)
-        turn = int(state.get("turn", 0)) + 1
+        merged_query = _merge_for_clarification(str(session.get("clarification_candidate_query", "")), user_query)
+        turn = int(session.get("clarification_turn", 0)) + 1
     else:
         merged_query = user_query
         turn = 0
 
     if _is_greeting_or_smalltalk(merged_query):
-        clarification_state[session_id] = {
-            "active": True,
-            "turn": turn,
-            "candidate_query": merged_query,
-        }
+        response_text = _smalltalk_reply(merged_query, session_id)
+        chat_store.set_clarification_state(session_id, True, turn, merged_query)
+        chat_store.save_turn(session_id, user_query, response_text, True, [])
         return jsonify(
             {
-                "response": _smalltalk_reply(merged_query, session_id),
+                "response": response_text,
                 "needs_clarification": True,
                 "response_style": _style_mode(session_id),
                 "sources": [],
@@ -403,14 +480,12 @@ def chat():
 
     is_specific, missing = _evaluate_specificity(merged_query)
     if (not is_specific) or _looks_like_unclear_query(merged_query):
-        clarification_state[session_id] = {
-            "active": True,
-            "turn": turn,
-            "candidate_query": merged_query,
-        }
+        response_text = _clarification_prompt(missing, turn, session_id)
+        chat_store.set_clarification_state(session_id, True, turn, merged_query)
+        chat_store.save_turn(session_id, user_query, response_text, True, [])
         return jsonify(
             {
-                "response": _clarification_prompt(missing, turn, session_id),
+                "response": response_text,
                 "needs_clarification": True,
                 "response_style": _style_mode(session_id),
                 "sources": [],
@@ -418,39 +493,31 @@ def chat():
             }
         )
 
-    clarification_state.pop(session_id, None)
+    chat_store.clear_clarification_state(session_id)
 
     try:
         engine = get_rag_engine()
         search_results = engine.search(merged_query)
         context, sources = engine.build_context(search_results)
 
-        history = session_memory[session_id]
-        history.append(f"User said: {merged_query}")
+        history = chat_store.get_history_lines(session_id)
         history = trim_memory(history)
-        session_memory[session_id] = history
 
         full_prompt = build_prompt(merged_query, context, history, session_id)
-        llm_response = get_llm().invoke(full_prompt)
-        if not isinstance(llm_response, str):
-            llm_response = str(llm_response)
+        llm_response = invoke_llm(full_prompt)
 
         if not _is_relevant_response(merged_query, llm_response):
-            clarification_state[session_id] = {
-                "active": True,
-                "turn": turn + 1,
-                "candidate_query": merged_query,
-            }
+            response_text = _style_text(
+                short_formal="One additional detail is required. Please restate your question with the exact constitutional issue and precise point to address.",
+                friendly_concise="I need one more detail to answer this properly. Please restate your question with the exact constitutional issue and the specific point you want me to address.",
+                student_friendly="I need one more detail. Please restate your question with the exact Constitution topic and what exactly you want me to explain.",
+                session_id=session_id,
+            )
+            chat_store.set_clarification_state(session_id, True, turn + 1, merged_query)
+            chat_store.save_turn(session_id, user_query, response_text, True, [])
             return jsonify(
                 {
-                    "response": (
-                        _style_text(
-                            short_formal="One additional detail is required. Please restate your question with the exact constitutional issue and precise point to address.",
-                            friendly_concise="I need one more detail to answer this properly. Please restate your question with the exact constitutional issue and the specific point you want me to address.",
-                            student_friendly="I need one more detail. Please restate your question with the exact Constitution topic and what exactly you want me to explain.",
-                            session_id=session_id,
-                        )
-                    ),
+                    "response": response_text,
                     "needs_clarification": True,
                     "response_style": _style_mode(session_id),
                     "sources": [],
@@ -458,7 +525,7 @@ def chat():
                 }
             )
 
-        session_memory[session_id] = trim_memory(session_memory[session_id] + [f"Assistant said: {llm_response}"])
+        chat_store.save_turn(session_id, user_query, llm_response, False, sources)
 
         return jsonify(
             {
@@ -471,7 +538,13 @@ def chat():
         )
     except Exception as e:
         err = str(e)
-        if "ollama" in err.lower() or "connection refused" in err.lower() or "model" in err.lower():
+        provider = _resolved_provider()
+        if provider == "gemini":
+            err = (
+                f"{err}. Ensure GEMINI_API_KEY is valid and model '{GEMINI_MODEL}' is available. "
+                "Set GEMINI_API_KEY and optionally GEMINI_MODEL / LLM_PROVIDER=gemini."
+            )
+        elif "ollama" in err.lower() or "connection refused" in err.lower() or "model" in err.lower():
             err = (
                 f"{err}. Ensure Ollama is running and model '{OLLAMA_MODEL}' is available. "
                 f"Try: ollama serve ; ollama pull {OLLAMA_MODEL}"

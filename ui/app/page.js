@@ -2,6 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:5000";
+const STORAGE_KEYS = {
+  sessionId: "adhikar.sessionId",
+  responseStyle: "adhikar.responseStyle",
+};
+
 const QUICK_PROMPTS = [
   "What does Article 14 provide?",
   "Explain Article 21 in simple words.",
@@ -28,6 +34,26 @@ const TRUST_POINTS = [
   "Built for constitutional reasoning",
 ];
 
+function mapTurnsToMessages(turns) {
+  return turns.flatMap((turn) => {
+    const userMessage = {
+      role: "You",
+      text: turn.user_query,
+      variant: "user",
+      sources: [],
+    };
+
+    const assistantMessage = {
+      role: turn.needs_clarification ? "Need More Details" : "Adhikar AI",
+      text: turn.assistant_response,
+      variant: turn.needs_clarification ? "clarification" : "assistant",
+      sources: turn.sources || [],
+    };
+
+    return [userMessage, assistantMessage];
+  });
+}
+
 export default function Page() {
   const [sessionId, setSessionId] = useState("");
   const [query, setQuery] = useState("");
@@ -40,8 +66,57 @@ export default function Page() {
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    setSessionId(crypto.randomUUID().slice(0, 8));
+    const storedSessionId = window.localStorage.getItem(STORAGE_KEYS.sessionId);
+    const nextSessionId = storedSessionId || crypto.randomUUID().slice(0, 8);
+    window.localStorage.setItem(STORAGE_KEYS.sessionId, nextSessionId);
+    setSessionId(nextSessionId);
+
+    const storedStyle = window.localStorage.getItem(STORAGE_KEYS.responseStyle);
+    if (storedStyle) {
+      setResponseStyle(storedStyle);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEYS.sessionId, sessionId);
+
+    const loadSessionHistory = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`);
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = await response.json();
+        if (payload.response_style) {
+          setResponseStyle(payload.response_style);
+          window.localStorage.setItem(STORAGE_KEYS.responseStyle, payload.response_style);
+        }
+
+        if (Array.isArray(payload.turns) && payload.turns.length > 0) {
+          setMessages(mapTurnsToMessages(payload.turns));
+        }
+
+        setIsClarifying(Boolean(payload.clarification_state?.active));
+      } catch {
+        // Leave the session empty if history cannot be fetched.
+      }
+    };
+
+    void loadSessionHistory();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!responseStyle) {
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEYS.responseStyle, responseStyle);
+  }, [responseStyle]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -71,7 +146,7 @@ export default function Page() {
     setStatus("Working...");
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/chat", {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -84,6 +159,10 @@ export default function Page() {
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload.error || "Request failed");
+      }
+
+      if (payload.response_style) {
+        setResponseStyle(payload.response_style);
       }
 
       const needsClarification = payload.needs_clarification === true;
