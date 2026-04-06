@@ -33,14 +33,14 @@ CORS(app, resources={r"/*": {"origins": _cors_origins_from_env()}})
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
 GEMINI_FALLBACK_MODELS = [
     model.strip()
     for model in os.getenv(
         "GEMINI_FALLBACK_MODELS",
-        "gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash-latest",
+        "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-1.5-flash-latest",
     ).split(",")
     if model.strip()
 ]
@@ -191,7 +191,13 @@ def invoke_llm(prompt: str) -> str:
                 break
             except Exception as e:
                 safe = _redact_secret_values(str(e)).lower()
-                if "not_found" in safe or "is not found" in safe:
+                if (
+                    "not_found" in safe
+                    or "is not found" in safe
+                    or "resource_exhausted" in safe
+                    or "quota exceeded" in safe
+                    or "429" in safe
+                ):
                     last_error = str(e)
                     continue
                 raise
@@ -255,6 +261,12 @@ def _friendly_provider_error(raw_error: str, provider: str) -> str:
             return (
                 "Gemini model was not found for your API version/project. "
                 f"Set GEMINI_MODEL to an available model (current default: '{GEMINI_MODEL}') or configure GEMINI_FALLBACK_MODELS."
+            )
+
+        if "resource_exhausted" in lowered or "quota exceeded" in lowered or "429" in lowered:
+            return (
+                "Gemini quota is exhausted for the configured key/project. "
+                f"Try lower-cost models first (current default: '{GEMINI_MODEL}'), reduce request volume, and enable billing or higher quota for Gemini API."
             )
 
         return (
