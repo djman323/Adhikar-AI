@@ -104,6 +104,8 @@ This starts:
 - Persistent chat storage in `data/adhikar.sqlite3`
 - Persistent vector data through the mounted `vectorstore/` directory
 
+If the `vectorstore/` directory is not mounted or already populated, the backend rebuilds the FAISS indexes from `Indian Constitution.pdf` on first start.
+
 The UI reuses the same session ID in browser storage, and the backend saves every turn to SQLite so chat history survives refreshes and restarts.
 
 LLM selection behavior:
