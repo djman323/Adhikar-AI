@@ -8,6 +8,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash-lite}
       GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-gemini-2.0-flash-lite,gemini-2.0-flash,gemini-1.5-flash-latest}
+      GEMINI_MODEL_DISCOVERY: ${GEMINI_MODEL_DISCOVERY:-1}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

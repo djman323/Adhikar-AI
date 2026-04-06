@@ -8,6 +8,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import OllamaLLM
+import requests
 
 from rag_engine import ConstitutionRAGEngine
 from storage import ChatStore
@@ -44,6 +45,7 @@ GEMINI_FALLBACK_MODELS = [
     ).split(",")
     if model.strip()
 ]
+GEMINI_MODEL_DISCOVERY = os.getenv("GEMINI_MODEL_DISCOVERY", "1").strip().lower() not in {"0", "false", "no"}
 
 SYSTEM_PROMPT = """You are Adhikar AI, functioning as both an expert Constitutional lawyer and judicial advisor for Indian law.
 
@@ -132,7 +134,53 @@ def _gemini_model_candidates() -> List[str]:
         if model not in candidates:
             candidates.append(model)
 
+    # Discover available models for this specific key/project and append any supported names.
+    if GEMINI_MODEL_DISCOVERY and GEMINI_API_KEY:
+        for model in _discover_gemini_models():
+            if model not in candidates:
+                candidates.append(model)
+
     return candidates
+
+
+def _discover_gemini_models() -> List[str]:
+    try:
+        response = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": GEMINI_API_KEY},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            return []
+
+        payload = response.json() if response.content else {}
+        discovered: List[str] = []
+
+        for model in payload.get("models", []):
+            methods = model.get("supportedGenerationMethods", []) or []
+            if "generateContent" not in methods:
+                continue
+
+            name = str(model.get("name", "")).strip()
+            if not name:
+                continue
+
+            # API returns names as `models/<model-id>`.
+            model_id = name.split("/", 1)[1] if name.startswith("models/") else name
+
+            # Prefer lighter models earlier when available.
+            if "flash-lite" in model_id:
+                discovered.insert(0, model_id)
+                continue
+            if "flash" in model_id and model_id not in discovered:
+                discovered.insert(min(len(discovered), 1), model_id)
+                continue
+
+            discovered.append(model_id)
+
+        return discovered
+    except Exception:
+        return []
 
 
 def _set_gemini_model(model_name: str) -> None:
