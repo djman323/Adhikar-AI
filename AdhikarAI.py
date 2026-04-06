@@ -167,6 +167,45 @@ def invoke_llm(prompt: str) -> str:
     return str(output)
 
 
+def _redact_secret_values(text: str) -> str:
+    # Mask API keys and consumer key identifiers that may appear in provider errors.
+    redacted = re.sub(r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED_API_KEY]", text)
+    redacted = re.sub(r"api_key:[0-9A-Za-z_-]+", "api_key:[REDACTED]", redacted)
+    return redacted
+
+
+def _friendly_provider_error(raw_error: str, provider: str) -> str:
+    safe_error = _redact_secret_values(raw_error)
+    lowered = safe_error.lower()
+
+    if provider == "gemini":
+        if "consumer_suspended" in lowered or "has been suspended" in lowered:
+            return (
+                "Gemini access is blocked because the configured API consumer is suspended. "
+                "Create or enable a new active API key in Google AI Studio or Google Cloud, "
+                "enable the Generative Language API, and update GEMINI_API_KEY in your deployment environment."
+            )
+
+        if "permission_denied" in lowered or "403" in lowered:
+            return (
+                "Gemini request was denied. Verify GEMINI_API_KEY, ensure the Generative Language API is enabled, "
+                f"and confirm the model '{GEMINI_MODEL}' is available for your project."
+            )
+
+        return (
+            f"Gemini request failed: {safe_error}. "
+            f"Ensure GEMINI_API_KEY is valid and model '{GEMINI_MODEL}' is available."
+        )
+
+    if provider == "ollama":
+        return (
+            f"Ollama request failed: {safe_error}. "
+            f"Ensure Ollama is running and model '{OLLAMA_MODEL}' is available."
+        )
+
+    return safe_error
+
+
 def trim_memory(lines: List[str], max_items: int = 8) -> List[str]:
     if len(lines) <= max_items:
         return lines
@@ -537,18 +576,8 @@ def chat():
             }
         )
     except Exception as e:
-        err = str(e)
         provider = _resolved_provider()
-        if provider == "gemini":
-            err = (
-                f"{err}. Ensure GEMINI_API_KEY is valid and model '{GEMINI_MODEL}' is available. "
-                "Set GEMINI_API_KEY and optionally GEMINI_MODEL / LLM_PROVIDER=gemini."
-            )
-        elif "ollama" in err.lower() or "connection refused" in err.lower() or "model" in err.lower():
-            err = (
-                f"{err}. Ensure Ollama is running and model '{OLLAMA_MODEL}' is available. "
-                f"Try: ollama serve ; ollama pull {OLLAMA_MODEL}"
-            )
+        err = _friendly_provider_error(str(e), provider)
         return jsonify({"error": err}), 500
 
 if __name__ == "__main__":
