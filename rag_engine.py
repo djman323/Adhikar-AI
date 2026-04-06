@@ -5,23 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from pypdf import PdfReader
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 PDF_PATH = ROOT_DIR / "Indian Constitution.pdf"
 VECTOR_DIR = ROOT_DIR / "vectorstore"
-PARENT_INDEX_PATH = VECTOR_DIR / "parent_index"
-CHILD_INDEX_PATH = VECTOR_DIR / "child_index"
 META_PATH = VECTOR_DIR / "metadata.json"
-
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 @dataclass
@@ -40,26 +31,16 @@ class SearchResult:
 
 class ConstitutionRAGEngine:
     def __init__(self) -> None:
-        self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-        self.parent_store: FAISS | None = None
-        self.child_store: FAISS | None = None
         self.parent_map: Dict[str, Dict] = {}
         self.child_map: Dict[str, Dict] = {}
         self.child_tokens: List[List[str]] = []
         self.bm25: BM25Okapi | None = None
-        self.reranker: CrossEncoder | None = None
 
     def ensure_index(self) -> None:
         if not PDF_PATH.exists():
             raise FileNotFoundError(f"Constitution PDF not found at: {PDF_PATH}")
 
-        files_exist = (
-            PARENT_INDEX_PATH.exists()
-            and CHILD_INDEX_PATH.exists()
-            and META_PATH.exists()
-        )
-
-        if not files_exist:
+        if not META_PATH.exists():
             self._build_index()
 
         self._load_index()
@@ -67,48 +48,38 @@ class ConstitutionRAGEngine:
     def _build_index(self) -> None:
         VECTOR_DIR.mkdir(parents=True, exist_ok=True)
 
-        loader = PyPDFLoader(str(PDF_PATH))
-        pages = loader.load()
-
-        parent_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2200,
-            chunk_overlap=220,
-        )
-        child_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=700,
-            chunk_overlap=100,
-        )
-
-        parent_docs = parent_splitter.split_documents(pages)
+        reader = PdfReader(str(PDF_PATH))
 
         parent_payload: List[Dict] = []
         child_payload: List[Dict] = []
 
-        for parent_idx, parent_doc in enumerate(parent_docs):
+        for parent_idx, page in enumerate(reader.pages):
             parent_id = f"p-{parent_idx}"
-            page = int(parent_doc.metadata.get("page", 0)) + 1
-            source = str(parent_doc.metadata.get("source", "Indian Constitution.pdf"))
-            parent_text = parent_doc.page_content.strip()
+            page_number = parent_idx + 1
+            source = "Indian Constitution.pdf"
+            parent_text = (page.extract_text() or "").strip()
+            if not parent_text:
+                continue
+
             section_hint = self._detect_section(parent_text)
 
             parent_payload.append(
                 {
                     "id": parent_id,
-                    "page": page,
+                    "page": page_number,
                     "source": source,
                     "section_hint": section_hint,
                     "text": parent_text,
                 }
             )
 
-            child_docs = child_splitter.split_text(parent_text)
-            for child_offset, child_text in enumerate(child_docs):
+            for child_offset, child_text in enumerate(self._split_text(parent_text, chunk_size=700, overlap=100)):
                 child_id = f"c-{parent_idx}-{child_offset}"
                 child_payload.append(
                     {
                         "id": child_id,
                         "parent_id": parent_id,
-                        "page": page,
+                        "page": page_number,
                         "source": source,
                         "section_hint": section_hint,
                         "text": child_text.strip(),
@@ -137,12 +108,6 @@ class ConstitutionRAGEngine:
             for item in child_payload
         ]
 
-        parent_index = FAISS.from_texts(parent_texts, self.embeddings, metadatas=parent_metas)
-        child_index = FAISS.from_texts(child_texts, self.embeddings, metadatas=child_metas)
-
-        parent_index.save_local(str(PARENT_INDEX_PATH))
-        child_index.save_local(str(CHILD_INDEX_PATH))
-
         with META_PATH.open("w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -155,17 +120,6 @@ class ConstitutionRAGEngine:
             )
 
     def _load_index(self) -> None:
-        self.parent_store = FAISS.load_local(
-            str(PARENT_INDEX_PATH),
-            self.embeddings,
-            allow_dangerous_deserialization=True,
-        )
-        self.child_store = FAISS.load_local(
-            str(CHILD_INDEX_PATH),
-            self.embeddings,
-            allow_dangerous_deserialization=True,
-        )
-
         with META_PATH.open("r", encoding="utf-8") as f:
             payload = json.load(f)
 
@@ -178,50 +132,25 @@ class ConstitutionRAGEngine:
         self.child_tokens = [self._tokenize(item["text"]) for item in child_payload]
         self.bm25 = BM25Okapi(self.child_tokens)
 
-        try:
-            self.reranker = CrossEncoder(RERANKER_MODEL)
-        except Exception:
-            self.reranker = None
-
     def search(self, query: str, dense_k: int = 12, bm25_k: int = 12, final_k: int = 5) -> List[SearchResult]:
-        if not self.child_store or not self.bm25:
+        if not self.bm25:
             raise RuntimeError("Index is not loaded.")
-
-        dense_results = self.child_store.similarity_search_with_score(query, k=dense_k)
-        dense_ranked: Dict[str, int] = {}
-        for rank, (doc, _) in enumerate(dense_results, start=1):
-            child_id = doc.metadata.get("id")
-            if child_id and child_id not in dense_ranked:
-                dense_ranked[child_id] = rank
 
         tokenized_query = self._tokenize(query)
         bm25_scores = self.bm25.get_scores(tokenized_query)
         bm25_indices = sorted(range(len(bm25_scores)), key=lambda idx: bm25_scores[idx], reverse=True)[:bm25_k]
-        bm25_ranked: Dict[str, int] = {}
         child_ids = list(self.child_map.keys())
+        ranked_candidates: List[Tuple[str, float]] = []
         for rank, idx in enumerate(bm25_indices, start=1):
             child_id = child_ids[idx]
-            bm25_ranked[child_id] = rank
+            score = float(bm25_scores[idx])
+            ranked_candidates.append((child_id, score))
 
-        all_ids = set(dense_ranked.keys()) | set(bm25_ranked.keys())
-        rrf_scored: List[Tuple[str, float]] = []
-        for child_id in all_ids:
-            d_rank = dense_ranked.get(child_id, 999)
-            b_rank = bm25_ranked.get(child_id, 999)
-            score = (1 / (60 + d_rank)) + (1 / (60 + b_rank))
-            rrf_scored.append((child_id, score))
-
-        rrf_scored.sort(key=lambda x: x[1], reverse=True)
-        top_candidates = rrf_scored[: max(final_k * 3, 10)]
-
-        rerank_pairs = [(query, self.child_map[child_id]["text"]) for child_id, _ in top_candidates]
-        if self.reranker:
-            rerank_scores = self.reranker.predict(rerank_pairs)
-        else:
-            rerank_scores = [score for _, score in top_candidates]
+        ranked_candidates.sort(key=lambda item: item[1], reverse=True)
+        top_candidates = ranked_candidates[: max(final_k * 3, 10)]
 
         merged = []
-        for (child_id, rrf_score), rerank_score in zip(top_candidates, rerank_scores):
+        for rank, (child_id, score) in enumerate(top_candidates, start=1):
             child = self.child_map[child_id]
             merged.append(
                 SearchResult(
@@ -231,14 +160,14 @@ class ConstitutionRAGEngine:
                     source=child["source"],
                     section_hint=child["section_hint"],
                     text=child["text"],
-                    dense_rank=dense_ranked.get(child_id, 999),
-                    bm25_rank=bm25_ranked.get(child_id, 999),
-                    rrf_score=float(rrf_score),
-                    rerank_score=float(rerank_score),
+                    dense_rank=rank,
+                    bm25_rank=rank,
+                    rrf_score=float(score),
+                    rerank_score=float(score),
                 )
             )
 
-        merged.sort(key=lambda x: x.rerank_score, reverse=True)
+        merged.sort(key=lambda x: x.rrf_score, reverse=True)
         return merged[:final_k]
 
     def build_context(self, results: List[SearchResult], max_parents: int = 4) -> Tuple[str, List[Dict]]:
@@ -275,6 +204,26 @@ class ConstitutionRAGEngine:
     @staticmethod
     def _tokenize(text: str) -> List[str]:
         return re.findall(r"[a-zA-Z0-9]+", text.lower())
+
+    @staticmethod
+    def _split_text(text: str, chunk_size: int, overlap: int) -> List[str]:
+        if chunk_size <= 0:
+            return [text]
+
+        chunks: List[str] = []
+        start = 0
+        text_length = len(text)
+
+        while start < text_length:
+            end = min(start + chunk_size, text_length)
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end >= text_length:
+                break
+            start = max(end - overlap, start + 1)
+
+        return chunks
 
     @staticmethod
     def _detect_section(text: str) -> str:
