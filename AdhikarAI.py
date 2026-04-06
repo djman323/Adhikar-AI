@@ -33,9 +33,17 @@ CORS(app, resources={r"/*": {"origins": _cors_origins_from_env()}})
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
+GEMINI_FALLBACK_MODELS = [
+    model.strip()
+    for model in os.getenv(
+        "GEMINI_FALLBACK_MODELS",
+        "gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash-latest",
+    ).split(",")
+    if model.strip()
+]
 
 SYSTEM_PROMPT = """You are Adhikar AI, functioning as both an expert Constitutional lawyer and judicial advisor for Indian law.
 
@@ -113,18 +121,39 @@ def _resolved_provider() -> str:
     return "gemini" if GEMINI_API_KEY else "ollama"
 
 
+def _gemini_model_candidates() -> List[str]:
+    candidates: List[str] = []
+
+    preferred = GEMINI_MODEL.strip()
+    if preferred:
+        candidates.append(preferred)
+
+    for model in GEMINI_FALLBACK_MODELS:
+        if model not in candidates:
+            candidates.append(model)
+
+    return candidates
+
+
+def _set_gemini_model(model_name: str) -> None:
+    global GEMINI_MODEL, llm
+    GEMINI_MODEL = model_name
+    llm = ChatGoogleGenerativeAI(
+        model=GEMINI_MODEL,
+        google_api_key=GEMINI_API_KEY,
+        temperature=0.0,
+        max_output_tokens=512,
+    )
+
+
 def load_llm():
     provider = _resolved_provider()
 
     if provider == "gemini":
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
-        return ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            google_api_key=GEMINI_API_KEY,
-            temperature=0.0,
-            max_output_tokens=512,
-        )
+        _set_gemini_model(_gemini_model_candidates()[0])
+        return llm
 
     return OllamaLLM(
         model=OLLAMA_MODEL,
@@ -144,7 +173,37 @@ def get_llm():
 
 
 def invoke_llm(prompt: str) -> str:
-    output = get_llm().invoke(prompt)
+    provider = _resolved_provider()
+
+    if provider == "gemini":
+        candidates = _gemini_model_candidates()
+        last_error = ""
+
+        for idx, model_name in enumerate(candidates):
+            if idx == 0:
+                model = get_llm()
+            else:
+                _set_gemini_model(model_name)
+                model = get_llm()
+
+            try:
+                output = model.invoke(prompt)
+                break
+            except Exception as e:
+                safe = _redact_secret_values(str(e)).lower()
+                if "not_found" in safe or "is not found" in safe:
+                    last_error = str(e)
+                    continue
+                raise
+        else:
+            raise RuntimeError(
+                "No compatible Gemini model found. Tried: "
+                + ", ".join(candidates)
+                + f". Last error: {_redact_secret_values(last_error)}"
+            )
+    else:
+        output = get_llm().invoke(prompt)
+
     if isinstance(output, str):
         return output
 
@@ -190,6 +249,12 @@ def _friendly_provider_error(raw_error: str, provider: str) -> str:
             return (
                 "Gemini request was denied. Verify GEMINI_API_KEY, ensure the Generative Language API is enabled, "
                 f"and confirm the model '{GEMINI_MODEL}' is available for your project."
+            )
+
+        if "not_found" in lowered or "is not found" in lowered:
+            return (
+                "Gemini model was not found for your API version/project. "
+                f"Set GEMINI_MODEL to an available model (current default: '{GEMINI_MODEL}') or configure GEMINI_FALLBACK_MODELS."
             )
 
         return (

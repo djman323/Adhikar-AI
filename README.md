@@ -134,7 +134,8 @@ Backend service:
 
 - `LLM_PROVIDER=gemini`
 - `GEMINI_API_KEY=your_api_key`
-- `GEMINI_MODEL=gemini-1.5-flash`
+- `GEMINI_MODEL=gemini-2.0-flash`
+- `GEMINI_FALLBACK_MODELS=gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash-latest`
 - `ADHIKAR_CORS_ORIGINS=<your-ui-url>`
 - `ADHIKAR_DATA_DIR=/app/data`
 - `ADHIKAR_DB_PATH=/app/data/adhikar.sqlite3`
@@ -181,7 +182,8 @@ Render deploys from your GitHub repo, so commit these files first.
 For `adhikar-backend`:
 
 - `GEMINI_API_KEY` = your Gemini API key
-- `GEMINI_MODEL` = Gemini model ID (default: `gemini-1.5-flash`)
+- `GEMINI_MODEL` = Gemini model ID (default: `gemini-2.0-flash`)
+- `GEMINI_FALLBACK_MODELS` = comma-separated fallback models
 - `LLM_PROVIDER` = `gemini`
 - `ADHIKAR_CORS_ORIGINS` = your UI URL(s), comma-separated
   - Example: `https://adhikar-ui.onrender.com`

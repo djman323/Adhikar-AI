@@ -14,7 +14,9 @@ services:
       - key: LLM_PROVIDER
         value: gemini
       - key: GEMINI_MODEL
-        value: gemini-1.5-flash
+        value: gemini-2.0-flash
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash-latest
       - key: GEMINI_API_KEY
         sync: false
       - key: ADHIKAR_DATA_DIR
